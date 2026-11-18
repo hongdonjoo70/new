@@ -1,0 +1,12 @@
+services:
+  citrus-forecast-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: citrus-forecast-streamlit:latest
+    container_name: citrus-forecast-app
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Seoul

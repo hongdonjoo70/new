@@ -1,0 +1,25 @@
+# 1. 가상환경 및 파이썬 캐시 제외
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# 2. 모델 학습용 주피터 노트북 제외 (Streamlit 배포 불필요)
+*.ipynb
+.ipynb_checkpoints/
+
+# 3. 모델 학습용 대용량 원본 CSV 데이터 제외 (사전 계산된 streamlit_predictions.pkl만 포함)
+data/*.csv
+!data/streamlit_predictions.pkl
+
+# 4. 기타 설정 및 불필요 파일 제외
+.git/
+.gitignore
+.vscode/
+.idea/
+*.log
+*.tmp
+Thumbs.db
+.DS_Store
