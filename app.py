@@ -3,6 +3,7 @@ import pickle
 from pathlib import Path
 from datetime import date, timedelta
 
+import re
 import numpy as np
 import pandas as pd
 import streamlit as st
@@ -10,6 +11,37 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 import matplotlib.ticker as ticker
 import seaborn as sns
+
+# 주차 정보를 제외하고 출하기 시작~종료 시점을 간결하게 정리하는 함수
+def format_clean_season(s):
+    matches = re.findall(r'(\d{2}/\d{2})~(\d{2}/\d{2})', str(s))
+    if not matches:
+        return str(s)
+
+    has_head = False
+    head_end = ''
+    has_tail = False
+    tail_start = ''
+    other_ranges = []
+
+    for st_dt, ed_dt in matches:
+        if st_dt == '01/01':
+            has_head = True
+            head_end = ed_dt
+        elif ed_dt in ['12/30', '12/31']:
+            has_tail = True
+            tail_start = st_dt
+        else:
+            other_ranges.append(f'{st_dt} ~ {ed_dt}')
+
+    if has_head and has_tail:
+        wrap_range = f'{tail_start} ~ 익년 {head_end}'
+        all_ranges = [wrap_range] + other_ranges
+        return ', '.join(all_ranges)
+    elif len(matches) == 1:
+        return f'{matches[0][0]} ~ {matches[0][1]}'
+    else:
+        return ', '.join([f'{st_dt} ~ {ed_dt}' for st_dt, ed_dt in matches])
 
 # OS 및 Docker(Linux) 환경 호환 한글 폰트 자동 감지 설정
 def get_korean_font():
@@ -112,10 +144,7 @@ except Exception as e:
 st.markdown(
     """
     <div style="background: linear-gradient(90deg, #1D3557 0%, #2A9D8F 100%); padding: 18px 24px; border-radius: 12px; color: white; margin-bottom: 16px;">
-        <h2 style="margin: 0; color: white; font-weight: 800;">🍊 감귤 품종 · 거래단위별 일주일간 예상 가격 · 거래량 및 모델별 정확도 비교 대시보드</h2>
-        <p style="margin: 6px 0 0 0; font-size: 14.5px; opacity: 0.94;">
-            전체 기간(<b>2021-01-02 ~ 2026-12-31</b>) 중 선택한 <b>품종 / 거래단위</b>와 <b>기준 날짜(중앙)</b>를 중심으로 <b>일주일간(전후 ±3일)</b>의 <b>4개 AI 모델(TFT · XGBoost · LightGBM · Random Forest)</b>별 예상 가격·거래량과 <b>모델별 예측 정확도(Accuracy · R² · MAE · MAPE)</b>를 함께 비교합니다.
-        </p>
+        <h2 style="margin: 0; color: white; font-weight: 800;">🍊 감귤 품종 · 거래단위별 일주일간 예상 가격 · 거래량</h2>
     </div>
     """,
     unsafe_allow_html=True
@@ -150,13 +179,13 @@ with st.sidebar:
     unit_weight_kg = float(gid_df['unit_weight_kg'].iloc[0]) if len(gid_df) > 0 else 5.0
 
     off_row = offseason_summary_df[offseason_summary_df['품종명'] == selected_variety].iloc[0]
+    season_clean_str = format_clean_season(off_row['출하기(예측 수행 기간)'])
     actual_sub = gid_df[gid_df['actual_vol_ton'].notnull()]
     last_actual_dt = actual_sub['date'].max().date() if len(actual_sub) > 0 else date(2026, 11, 11)
 
     st.info(
         f"**[{selected_variety}] 시즌 안내**\n"
-        f"- **출하기(예측 수행)**: {off_row['출하기(예측 수행 기간)']}\n"
-        f"- **비수기(예측 제외)**: {off_row['계절적 비수기(예측 제외 기간)']}"
+        f"- **출하기 (시작~종료)**: `{season_clean_str}`"
     )
 
     min_dt = date(2021, 1, 2)
@@ -382,22 +411,22 @@ if is_offseason:
                 ⚠️ 현재 선택일은 [{selected_variety}] 계절적 비수기입니다
             </h1>
             <p style="color: #4E342E; font-size: 19px; font-weight: 700; margin: 0 0 22px 0; line-height: 1.5;">
-                선택하신 날짜 <span style="background-color: #FFFFFF; padding: 4px 14px; border-radius: 8px; border: 2px solid #FF8F00; color: #C62828; font-weight: 800;">{selected_date_disp}</span> ({selected_wk}주차)는 
+                선택하신 날짜 <span style="background-color: #FFFFFF; padding: 4px 14px; border-radius: 8px; border: 2px solid #FF8F00; color: #C62828; font-weight: 800;">{selected_date_disp}</span>는 
                 <span style="color: #1B5E20; text-decoration: underline;">[{selected_variety}]</span> 품종의 
                 <strong style="color: #D84315;">경매 비수기(예측 제외 기간)</strong>에 해당하여 
                 <span style="background-color: #FFCDD2; color: #B71C1C; padding: 2px 8px; border-radius: 4px; font-weight: 800;">예측 Graph 출력을 비활성화(숨김)</span>합니다.
             </p>
             <div style="background-color: #FFFFFF; border-radius: 12px; padding: 22px 28px; display: inline-block; text-align: left; max-width: 780px; border: 2px solid #FFCA28; box-shadow: 0 3px 10px rgba(0,0,0,0.05);">
                 <div style="font-size: 16px; color: #212529; line-height: 2.0;">
-                    <div>🌿 <strong style="color: #1B5E20;">정상 출하기 (AI 예측 수행 기간):</strong> <span style="background-color: #E8F5E9; color: #1B5E20; font-weight: 800; font-size: 17px; padding: 2px 10px; border-radius: 6px; border: 1px solid #A5D6A7;">{off_row['출하기(예측 수행 기간)']}</span></div>
-                    <div>❄️ <strong style="color: #C62828;">계절적 비수기 (예측 제외 기간):</strong> <span style="background-color: #FFEBEE; color: #C62828; font-weight: 800; font-size: 16px; padding: 2px 10px; border-radius: 6px; border: 1px solid #FFCDD2;">{off_row['계절적 비수기(예측 제외 기간)']}</span></div>
+                    <div>🌿 <strong style="color: #1B5E20;">정상 출하기 (시작~종료):</strong> <span style="background-color: #E8F5E9; color: #1B5E20; font-weight: 800; font-size: 17px; padding: 2px 10px; border-radius: 6px; border: 1px solid #A5D6A7;">{season_clean_str}</span></div>
+                    <div>❄️ <strong style="color: #C62828;">계절적 비수기:</strong> <span style="background-color: #FFEBEE; color: #C62828; font-weight: 800; font-size: 16px; padding: 2px 10px; border-radius: 6px; border: 1px solid #FFCDD2;">위 출하기 외 기간</span></div>
                 </div>
                 <hr style="margin: 14px 0; border: none; border-top: 1.5px dashed #FFB300;" />
                 <div style="font-size: 14px; color: #5D4037; line-height: 1.75;">
                     💡 <strong>비수기 예측 제외 사유:</strong><br/>
                     감귤 도매시장 경매 특성상 비수기에는 출하 및 거래량이 거의 없어(0톤에 수렴) 가격 변동성이 왜곡되며 모델 신뢰도를 보장하기 어렵습니다. 이에 따라 <strong>비수기에는 인공지능 가격 및 거래량 예측 그래프(1번 및 2번) 출력을 비활성화</strong>합니다.<br/><br/>
                     👉 <strong>예측 그래프 확인 방법:</strong><br/>
-                    좌측 사이드바의 <strong>[3️⃣ 기준 날짜 선택]</strong>에서 위 <strong>출하기 기간</strong> 내 날짜를 선택하시면 4개 모델(TFT, XGBoost, LightGBM, Random Forest)의 일주일간 예상 가격 및 거래량 그래프를 즉시 확인하실 수 있습니다.
+                    좌측 사이드바의 <strong>[3️⃣ 기준 날짜 선택]</strong>에서 위 <strong>출하기 기간 ({season_clean_str})</strong> 내 날짜를 선택하시면 4개 모델(TFT, XGBoost, LightGBM, Random Forest)의 일주일간 예상 가격 및 거래량 그래프를 즉시 확인하실 수 있습니다.
                 </div>
             </div>
         </div>
@@ -488,8 +517,6 @@ else:
                 value=f"{c_prc_disp:,.0f} {prc_unit_str}" if pd.notnull(c_prc_disp) else "-",
                 delta=f"예상 물량: {c_vol:,.1f} 톤 ({diff_str})" if pd.notnull(c_vol) else "-"
             )
-            if g_acc:
-                st.caption(f"✅ 정확도: 가격 **{g_acc['p_acc']:.1f}%** · 물량 **{g_acc['v_acc']:.1f}%** (R²={g_acc['v_r2']:.3f})")
         col_cursor += 1
 
     st.divider()
@@ -547,14 +574,12 @@ else:
 
     for m_name in selected_models:
         m_cfg = MODEL_CONFIG[m_name]
-        g_acc = group_acc_dict.get(m_name)
-        acc_tag = f" (정확도 {g_acc['v_acc']:.1f}%)" if g_acc else ""
         v_vals = win_df[f'{m_name}_vol_p50'].fillna(0.0).values
         ax_vol.bar(
             x_idx + offsets[b_pos],
             v_vals,
             width=bar_w, color=m_cfg['color'], alpha=0.90,
-            label=f"{m_cfg['short']} 예상 물량{acc_tag}"
+            label=f"{m_cfg['short']} 예상 물량"
         )
         ax_vol.plot(
             x_idx + offsets[b_pos],
@@ -608,15 +633,13 @@ else:
 
     for m_name in selected_models:
         m_cfg = MODEL_CONFIG[m_name]
-        g_acc = group_acc_dict.get(m_name)
-        acc_tag = f" (정확도 {g_acc['p_acc']:.1f}%)" if g_acc else ""
         p50_vals = win_df[f'{m_name}_prc_p50'] * prc_mult
         p10_vals = win_df[f'{m_name}_prc_p10'] * prc_mult
         p90_vals = win_df[f'{m_name}_prc_p90'] * prc_mult
         ax_prc.plot(
             x_idx, p50_vals,
             color=m_cfg['color'], linestyle='--', linewidth=2.2, marker=m_cfg['marker'], markersize=6.5,
-            label=f"{m_cfg['short']} 예상 가격{acc_tag}"
+            label=f"{m_cfg['short']} 예상 가격"
         )
         if show_quantile_band:
             ax_prc.fill_between(x_idx, p10_vals, p90_vals, color=m_cfg['color'], alpha=0.11)
@@ -641,8 +664,8 @@ else:
 
     st.divider()
 
-    # 3. 4개 모델 개별(2x2) 일주일간 예상 거래량(막대) + 예상 가격(선) + 모델별 정확도 표시 상세 그래프
-    st.subheader(f"🔍 2. 각각의 모델별(TFT · XGBoost · LightGBM · Random Forest) 일주일간 실제 vs 예상 거래량 · 가격 및 정확도 상세 그래프")
+    # 3. 4개 모델 개별(2x2) 일주일간 예상 거래량(막대) + 예상 가격(선) 상세 그래프
+    st.subheader(f"🔍 2. 각각의 모델별(TFT · XGBoost · LightGBM · Random Forest) 일주일간 실제 vs 예상 거래량 · 가격 상세 그래프")
 
     ncols_m = 2
     nrows_m = int(np.ceil(len(selected_models) / ncols_m))
@@ -709,13 +732,7 @@ else:
                 if av > 0:
                     ax1.text(xi, av * 1.02, f"실제\n{av:,.1f}t", ha='center', va='bottom', fontsize=7.3, fontweight='bold', color='#1D3557')
 
-        acc_title_str = ""
-        if g_acc:
-            acc_title_str = f"\n[규격 정확도 — 가격: {g_acc['p_acc']:.1f}% (MAPE {g_acc['p_mape']:.1f}%) | 거래량: {g_acc['v_acc']:.1f}% (R²={g_acc['v_r2']:.3f})]"
-            if w_acc and w_acc['n_days'] >= 1:
-                acc_title_str += f" · [조회 7일 정확도 — 가격: {w_acc['p_acc']:.1f}% | 물량: {w_acc['v_acc']:.1f}%]"
-
-        ax1.set_title(f"{idx_m + 1}. {m_cfg['label']}{acc_title_str}", fontsize=10.5, fontweight='bold', pad=10)
+        ax1.set_title(f"{idx_m + 1}. {m_cfg['label']}", fontsize=11, fontweight='bold', pad=10)
         ax1.set_xticks(x_idx)
         ax1.set_xticklabels(x_labels, fontsize=8.8, fontweight='bold')
         ax1.set_ylabel("거래량 (톤/일)", color=m_cfg['color'], fontsize=9.5, fontweight='bold')
