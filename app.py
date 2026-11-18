@@ -59,7 +59,7 @@ sns.set_theme(style='whitegrid', font=KOR_FONT)
 plt.rcParams['axes.unicode_minus'] = False
 
 st.set_page_config(
-    page_title="감귤 품종·거래단위별 모델별 일주일간 가격·거래량 예측 대시보드",
+    page_title="감귤 품종·거래단위별 주간(월~토) 가격·거래량 예측 대시보드",
     page_icon="🍊",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -118,7 +118,7 @@ def load_prediction_data():
     df['date'] = pd.to_datetime(df['date'])
     df = df[(df['date'] >= '2021-01-02') & (df['date'] <= '2026-12-31')].sort_values(['group_id', 'date']).reset_index(drop=True)
 
-    # 전체 47개 규격 종합 모델별 정확도 사전 산출
+    # 전체 주요 규격(16개 규격) 종합 모델별 정확도 사전 산출
     overall_acc = {}
     for m_name in MODEL_CONFIG:
         overall_acc[m_name] = calc_accuracy_metrics(df, m_name, prc_mult=1.0)
@@ -136,6 +136,7 @@ def load_prediction_data():
 
 try:
     all_preds_df, top5_units, variety_order, offseason_summary_df, active_season_pairs, korean_holidays, wk_full_grid, overall_acc_dict = load_prediction_data()
+    n_total_groups = len(top5_units)
 except Exception as e:
     st.error(f"데이터 로드 오류: {e}")
     st.stop()
@@ -144,7 +145,7 @@ except Exception as e:
 st.markdown(
     """
     <div style="background: linear-gradient(90deg, #1D3557 0%, #2A9D8F 100%); padding: 18px 24px; border-radius: 12px; color: white; margin-bottom: 16px;">
-        <h2 style="margin: 0; color: white; font-weight: 800;">🍊 감귤 품종 · 거래단위별 일주일간 예상 가격 · 거래량</h2>
+        <h2 style="margin: 0; color: white; font-weight: 800;">🍊 감귤 4대 핵심 품종(조생귤 · 한라봉 · 하우스감귤 · 천혜향) 주간(월~토) 예상 가격 · 거래량</h2>
     </div>
     """,
     unsafe_allow_html=True
@@ -154,7 +155,8 @@ st.markdown(
 with st.sidebar:
     st.header("🔍 예측 조회 조건 설정")
 
-    avail_varieties = [v for v in variety_order if v in top5_units['variety'].unique()]
+    TARGET_VARIETIES = ['조생귤', '한라봉', '하우스감귤', '천혜향']
+    avail_varieties = [v for v in TARGET_VARIETIES if v in top5_units['variety'].unique()]
     selected_variety = st.selectbox(
         "1️⃣ 품종 선택",
         options=avail_varieties,
@@ -195,51 +197,31 @@ with st.sidebar:
     default_target = last_actual_dt if last_actual_dt in avail_dates_list else (avail_dates_list[-1] if avail_dates_list else date(2026, 11, 11))
 
     selected_date = st.date_input(
-        "3️⃣ 기준 날짜 선택 (달력 기준 7일: D-3일 ~ D+3일)",
+        "3️⃣ 기준 날짜 선택 (해당 주간 월~토 예측)",
         value=default_target,
         min_value=min_dt,
         max_value=max_dt
     )
 
-    window_mode = "달력 기준 7일 (선택일 중앙: D-3일 ~ D+3일)"
-
-    price_unit_mode = st.radio(
-        "4️⃣ 가격 그래프 표시 단위",
-        options=["kg당 단가 (원/kg)", f"상자당 가격 ({selected_unit} 기준, 원)"],
-        index=0
-    )
-
-    selected_models = st.multiselect(
-        "5️⃣ 비교할 예측 모델 선택",
-        options=list(MODEL_CONFIG.keys()),
-        default=list(MODEL_CONFIG.keys()),
-        format_func=lambda m: MODEL_CONFIG[m]['short']
-    )
-    if not selected_models:
-        selected_models = list(MODEL_CONFIG.keys())
+    window_mode = "선택일 포함 주간 (월요일~토요일 6일간)"
+    price_unit_mode = "kg당 단가 (원/kg)"
+    selected_models = list(MODEL_CONFIG.keys())
 
     # 실제가격, 예년(2021~2025) 데이터, 불확실성 예측 구간(P10~P90) 항상 기본 표시
     show_actual = True
     show_hist_21_25 = True
     show_quantile_band = True
 
-# 선택된 날짜(selected_date)를 중앙으로 하는 7일 데이터 구성 함수
-def build_7day_window_df(gid_df, selected_variety, selected_gid, target_dt, mode_str):
+# 선택된 날짜가 포함된 주의 월요일부터 토요일까지 6일간 데이터 구성 함수
+def build_mon_to_sat_window_df(gid_df, selected_variety, selected_gid, target_dt):
     target_ts = pd.Timestamp(target_dt)
     gid_indexed = gid_df.set_index('date')
     wk_hist_sub = wk_full_grid[wk_full_grid['group_id'] == selected_gid].set_index('week_idx')
 
-    if "달력 기준" in mode_str:
-        window_dates = [target_ts + pd.Timedelta(days=offset) for offset in range(-3, 4)]
-    else:
-        all_valid_dates = gid_df['date'].sort_values().tolist()
-        if len(all_valid_dates) <= 7:
-            window_dates = all_valid_dates
-        else:
-            diffs = [abs((d - target_ts).days) for d in all_valid_dates]
-            center_idx = int(np.argmin(diffs))
-            center_idx = max(3, min(len(all_valid_dates) - 4, center_idx))
-            window_dates = all_valid_dates[center_idx - 3 : center_idx + 4]
+    # 해당 주간의 월요일 계산 (월:0, 화:1, ..., 일:6)
+    mon_ts = target_ts - pd.Timedelta(days=target_ts.dayofweek)
+    # 월요일부터 토요일까지 6일간 날짜 생성 (일요일은 도매시장 정기 휴장이므로 제외)
+    window_dates = [mon_ts + pd.Timedelta(days=i) for i in range(6)]
 
     rows = []
     for d_ts in window_dates:
@@ -261,7 +243,7 @@ def build_7day_window_df(gid_df, selected_variety, selected_gid, target_dt, mode
             row_dict['day_status'] = '정상 영업일(실제+예측)' if has_act else '정상 영업일(예측)'
         else:
             if is_sun_or_hol:
-                status_str = '휴장일(일요일/공휴일)'
+                status_str = '휴장일(공휴일)'
             elif not is_active_wk:
                 status_str = f'계절적 비수기({wk_num}주차 예측제외)'
             else:
@@ -304,19 +286,26 @@ def build_7day_window_df(gid_df, selected_variety, selected_gid, target_dt, mode
 
     w_df = pd.DataFrame(rows)
     if not w_df['is_center'].any() and len(w_df) > 0:
-        w_df.loc[len(w_df) // 2, 'is_center'] = True
+        if target_ts.dayofweek == 6:
+            w_df.loc[len(w_df) - 1, 'is_center'] = True  # 일요일 선택 시 토요일 강조
+        else:
+            w_df.loc[0, 'is_center'] = True
     return w_df
 
-win_df = build_7day_window_df(gid_df, selected_variety, selected_gid, selected_date, window_mode)
+win_df = build_mon_to_sat_window_df(gid_df, selected_variety, selected_gid, selected_date)
 center_idx = int(win_df.index[win_df['is_center']][0])
 center_row = win_df.loc[center_idx]
-center_date_str = center_row['date'].strftime('%Y-%m-%d') + f" ({center_row['요일']})"
+target_dow_str = WEEKDAY_KOR[pd.Timestamp(selected_date).dayofweek]
+center_date_str = pd.Timestamp(selected_date).strftime('%Y-%m-%d') + f" ({target_dow_str})"
+mon_str = win_df.iloc[0]['date'].strftime('%m/%d')
+sat_str = win_df.iloc[-1]['date'].strftime('%m/%d')
+week_range_str = f"{mon_str}(월) ~ {sat_str}(토)"
 
-prc_mult = unit_weight_kg if "상자당" in price_unit_mode else 1.0
-prc_unit_str = "원/상자" if "상자당" in price_unit_mode else "원/kg"
+prc_mult = 1.0  # kg당 단가 고정
+prc_unit_str = "원/kg"
 has_any_actual = show_actual and (win_df['actual_vol_ton'].notnull().any() or win_df['actual_prc_kg'].notnull().any())
 
-# 선택 품종·단위 및 현재 7일 구간의 모델별 정확도 계산
+# 선택 품종·단위 및 현재 주간(월~토) 구간의 모델별 정확도 계산
 group_acc_dict = {}
 window_acc_dict = {}
 for m_name in MODEL_CONFIG:
@@ -341,10 +330,10 @@ for m_name in selected_models:
             f'[{selected_variety}-{selected_unit}] 거래량 정확도(%)': f"{g_acc['v_acc']:.2f}%",
             f'[{selected_variety}-{selected_unit}] 거래량 R²': f"{g_acc['v_r2']:.4f}" if pd.notnull(g_acc['v_r2']) else "-",
             f'[{selected_variety}-{selected_unit}] 거래량 MAE(톤/일)': f"{g_acc['v_mae']:,.2f} 톤",
-            '조회 7일 가격 정확도(%)': f"{w_acc['p_acc']:.2f}% (MAE {w_acc['p_mae']:,.0f}원)" if (w_acc and w_acc['n_days'] >= 1) else "미래구간(실제없음)",
-            '조회 7일 거래량 정확도(%)': f"{w_acc['v_acc']:.2f}% (MAE {w_acc['v_mae']:,.2f}톤)" if (w_acc and w_acc['n_days'] >= 1) else "미래구간(실제없음)",
-            '전체(47개 규격) 가격 정확도(%)': f"{o_acc['p_acc']:.2f}% (R²={o_acc['p_r2']:.4f})",
-            '전체(47개 규격) 거래량 R² / 정확도': f"R²={o_acc['v_r2']:.4f} ({o_acc['v_acc']:.2f}%)",
+            '해당 주간(월~토) 가격 정확도(%)': f"{w_acc['p_acc']:.2f}% (MAE {w_acc['p_mae']:,.0f}원)" if (w_acc and w_acc['n_days'] >= 1) else "미래구간(실제없음)",
+            '해당 주간(월~토) 거래량 정확도(%)': f"{w_acc['v_acc']:.2f}% (MAE {w_acc['v_mae']:,.2f}톤)" if (w_acc and w_acc['n_days'] >= 1) else "미래구간(실제없음)",
+            f'전체({n_total_groups}개 규격) 가격 정확도(%)': f"{o_acc['p_acc']:.2f}% (R²={o_acc['p_r2']:.4f})",
+            f'전체({n_total_groups}개 규격) 거래량 R² / 정확도': f"R²={o_acc['v_r2']:.4f} ({o_acc['v_acc']:.2f}%)",
             '_g_p_acc': g_acc['p_acc'],
             '_g_v_acc': g_acc['v_acc'],
             '_o_p_acc': o_acc['p_acc'],
@@ -356,11 +345,11 @@ for m_name in selected_models:
 
 acc_df = pd.DataFrame(acc_rows)
 
-# 7일간 상세 데이터 비교 테이블 사전 계산
+# 해당 주간(월~토) 상세 데이터 비교 테이블 사전 계산
 table_rows = []
 for _, r in win_df.iterrows():
     row_item = {
-        '기준구분': '★ 선택 기준일(중앙)' if r['is_center'] else '-',
+        '기준구분': '★ 선택 기준일' if r['is_center'] else '-',
         '날짜': r['date'].strftime('%Y-%m-%d'),
         '요일': r['요일'],
         '영업상태': r['day_status'],
@@ -385,7 +374,7 @@ for _, r in win_df.iterrows():
 table_df = pd.DataFrame(table_rows)
 csv_bytes = table_df.to_csv(index=False, encoding='utf-8-sig').encode('utf-8-sig')
 
-# 계절적 비수기 판별 (선택 날짜 및 7일 중앙일 기준)
+# 계절적 비수기 판별 (선택 날짜 및 주간 기준)
 selected_ts = pd.Timestamp(selected_date)
 selected_wk = min(52, (selected_ts.dayofyear - 1) // 7 + 1)
 is_selected_offseason = (selected_variety, selected_wk) not in active_season_pairs
@@ -426,7 +415,7 @@ if is_offseason:
                     💡 <strong>비수기 예측 제외 사유:</strong><br/>
                     감귤 도매시장 경매 특성상 비수기에는 출하 및 거래량이 거의 없어(0톤에 수렴) 가격 변동성이 왜곡되며 모델 신뢰도를 보장하기 어렵습니다. 이에 따라 <strong>비수기에는 인공지능 가격 및 거래량 예측 그래프(1번 및 2번) 출력을 비활성화</strong>합니다.<br/><br/>
                     👉 <strong>예측 그래프 확인 방법:</strong><br/>
-                    좌측 사이드바의 <strong>[3️⃣ 기준 날짜 선택]</strong>에서 위 <strong>출하기 기간 ({season_clean_str})</strong> 내 날짜를 선택하시면 4개 모델(TFT, XGBoost, LightGBM, Random Forest)의 일주일간 예상 가격 및 거래량 그래프를 즉시 확인하실 수 있습니다.
+                    좌측 사이드바의 <strong>[3️⃣ 기준 날짜 선택]</strong>에서 위 <strong>출하기 기간 ({season_clean_str})</strong> 내 날짜를 선택하시면 4개 모델(TFT, XGBoost, LightGBM, Random Forest)의 해당 주간(월~토) 예상 가격 및 거래량 그래프를 즉시 확인하실 수 있습니다.
                 </div>
             </div>
         </div>
@@ -434,18 +423,18 @@ if is_offseason:
         unsafe_allow_html=True
     )
 
-    st.info("💡 비수기 기간 중에는 예측 그래프가 숨김 처리됩니다. 아래 접이식 메뉴를 클릭하시면 해당 품종의 AI 모델 전체 정확도 평가 지표와 7일간의 상세 상태표를 확인하실 수 있습니다.")
+    st.info("💡 비수기 기간 중에는 예측 그래프가 숨김 처리됩니다. 아래 접이식 메뉴를 클릭하시면 해당 품종의 AI 모델 전체 정확도 평가 지표와 해당 주간(월~토) 상세 상태표를 확인하실 수 있습니다.")
 
     with st.expander(f"📊 참고: [{selected_variety}] 품종 AI 모델별 전체 정확도(Accuracy · R² · MAE · MAPE) 평가 지표 확인", expanded=False):
         disp_acc_cols = [c for c in acc_df.columns if not c.startswith('_')]
         st.dataframe(acc_df[disp_acc_cols], use_container_width=True, hide_index=True)
 
-    with st.expander(f"📋 참고: [{selected_variety} - {selected_unit}] 선택일 전후 7일간 일정 및 비수기 상태표 확인", expanded=False):
+    with st.expander(f"📋 참고: [{selected_variety} - {selected_unit}] 선택일 포함 주간({week_range_str}) 일정 및 비수기 상태표 확인", expanded=False):
         st.dataframe(table_df, use_container_width=True, hide_index=True)
         st.download_button(
-            label="📥 현재 조회된 일주일간 상태표 CSV 다운로드",
+            label="📥 해당 주간(월~토) 상태표 CSV 다운로드",
             data=csv_bytes,
-            file_name=f"citrus_7day_offseason_{selected_gid}_{selected_date.strftime('%Y%m%d')}.csv",
+            file_name=f"citrus_week_offseason_{selected_gid}_{selected_date.strftime('%Y%m%d')}.csv",
             mime="text/csv",
             key="btn_download_offseason"
         )
@@ -454,15 +443,15 @@ else:
     # 정상 출하기인 경우: 휴장일 알림, 상단 KPI 요약 카드, 예측 그래프 1&2, 정확도 그래프 3, 상세표 4 전체 정상 출력
     if "휴장일" in str(center_row.get('day_status', '')):
         st.info(
-            f"ℹ️ 선택한 중앙 날짜 **{center_date_str}**은 **도매시장 경매 휴장일(일요일/법정공휴일)**입니다. "
-            f"해당 날짜를 중간으로 전후 일주일간의 개장 영업일 실제·예상 가격 및 거래량을 함께 출력합니다."
+            f"ℹ️ 선택한 기준일 **{center_date_str}**은 **도매시장 경매 휴장일(공휴일/일요일)**입니다. "
+            f"해당 주간({week_range_str})의 개장 영업일(월~토) 실제·예상 가격 및 거래량을 함께 출력합니다."
         )
 
-    # 1. 상단 KPI 요약 카드 (실제값 + 예년값 + 4개 모델별 예상값 및 정확도 요약)
-    st.subheader(f"📌 [{selected_variety} - {selected_unit}] 기준일({center_date_str}) 및 일주일간({win_df['date'].min().strftime('%Y-%m-%d')} ~ {win_df['date'].max().strftime('%Y-%m-%d')}) 요약")
+    # 1. 상단 KPI 요약 카드 (실제값 + 예년값 + 가격 정확도 1위 Random Forest 예상값 요약)
+    st.subheader(f"📌 [{selected_variety} - {selected_unit}] {week_range_str} 주간 요약 (선택일: {center_date_str}, 최고 정확도 모델: Random Forest)")
 
     n_extra_kpis = (1 if has_any_actual else 0) + 1
-    kpi_cols = st.columns(len(selected_models) + n_extra_kpis)
+    kpi_cols = st.columns(1 + n_extra_kpis)
     col_cursor = 0
 
     h_vol_c = center_row['hist_vol_21_25'] if pd.notnull(center_row['hist_vol_21_25']) and center_row['hist_vol_21_25'] > 0 else win_df['hist_vol_21_25'].replace(0, np.nan).mean()
@@ -473,7 +462,7 @@ else:
 
     if has_any_actual:
         with kpi_cols[col_cursor]:
-            act_lbl = "기준일 실제" if pd.notnull(center_row.get('actual_prc_kg')) else "기간내 실제평균"
+            act_lbl = "기준일 실제" if pd.notnull(center_row.get('actual_prc_kg')) else "주간 실제평균"
             st.metric(
                 label=f"🎯 실제 경매 결과 ({act_lbl})",
                 value=f"{act_prc_c:,.0f} {prc_unit_str}" if pd.notnull(act_prc_c) else "-",
@@ -481,7 +470,7 @@ else:
                 delta_color="off"
             )
             act_days_cnt = int(win_df['actual_vol_ton'].notnull().sum())
-            st.caption(f"조회 7일 중 실제 거래일: {act_days_cnt}일")
+            st.caption(f"해당 주간 실제 경매일: {act_days_cnt}일")
         col_cursor += 1
 
     with kpi_cols[col_cursor]:
@@ -494,35 +483,35 @@ else:
         st.caption(f"해당 시점({int(center_row['week_idx'])}주차) 5개년 기준")
     col_cursor += 1
 
-    for m_name in selected_models:
-        m_cfg = MODEL_CONFIG[m_name]
-        g_acc = group_acc_dict.get(m_name)
-        with kpi_cols[col_cursor]:
-            c_vol = center_row.get(f'{m_name}_vol_p50', np.nan)
-            c_prc = center_row.get(f'{m_name}_prc_p50', np.nan)
-            label_suffix = "기준일"
-            if pd.isnull(c_prc) or c_vol == 0.0:
-                c_vol = win_df[f'{m_name}_vol_p50'].replace(0, np.nan).mean()
-                c_prc = win_df[f'{m_name}_prc_p50'].mean()
-                label_suffix = "일주일 평균"
-            c_prc_disp = c_prc * prc_mult if pd.notnull(c_prc) else np.nan
-            if has_any_actual and pd.notnull(act_prc_c) and act_prc_c > 0 and pd.notnull(c_prc_disp):
-                diff_str = f"{(c_prc_disp / act_prc_c - 1.0)*100.0:+.1f}% vs 실제"
-            elif pd.notnull(c_prc_disp) and pd.notnull(h_prc_c) and h_prc_c > 0:
-                diff_str = f"{(c_prc_disp / h_prc_c - 1.0)*100.0:+.1f}% vs 예년"
-            else:
-                diff_str = "-"
-            st.metric(
-                label=f"🤖 {m_cfg['short']} 예상 ({label_suffix})",
-                value=f"{c_prc_disp:,.0f} {prc_unit_str}" if pd.notnull(c_prc_disp) else "-",
-                delta=f"예상 물량: {c_vol:,.1f} 톤 ({diff_str})" if pd.notnull(c_vol) else "-"
-            )
-        col_cursor += 1
+    best_m = 'RandomForest'
+    best_cfg = MODEL_CONFIG[best_m]
+    with kpi_cols[col_cursor]:
+        c_vol = center_row.get(f'{best_m}_vol_p50', np.nan)
+        c_prc = center_row.get(f'{best_m}_prc_p50', np.nan)
+        label_suffix = "기준일"
+        if pd.isnull(c_prc) or c_vol == 0.0:
+            c_vol = win_df[f'{best_m}_vol_p50'].replace(0, np.nan).mean()
+            c_prc = win_df[f'{best_m}_prc_p50'].mean()
+            label_suffix = "주간 평균"
+        c_prc_disp = c_prc * prc_mult if pd.notnull(c_prc) else np.nan
+        if has_any_actual and pd.notnull(act_prc_c) and act_prc_c > 0 and pd.notnull(c_prc_disp):
+            diff_str = f"{(c_prc_disp / act_prc_c - 1.0)*100.0:+.1f}% vs 실제"
+        elif pd.notnull(c_prc_disp) and pd.notnull(h_prc_c) and h_prc_c > 0:
+            diff_str = f"{(c_prc_disp / h_prc_c - 1.0)*100.0:+.1f}% vs 예년"
+        else:
+            diff_str = "-"
+        st.metric(
+            label=f"🌲 {best_cfg['short']} 예상 ({label_suffix})",
+            value=f"{c_prc_disp:,.0f} {prc_unit_str}" if pd.notnull(c_prc_disp) else "-",
+            delta=f"예상 물량: {c_vol:,.1f} 톤 ({diff_str})" if pd.notnull(c_vol) else "-"
+        )
+        st.caption("가격 정확도 1위 모델 (2021~2026 전체 90.8%)")
+    col_cursor += 1
 
     st.divider()
 
-    # 2. 메인 비교 그래프: 선택 날짜(중앙) 기준 일주일간 모델별 예상 거래량 & 예상 가격 (실제값 + 예년값 포함)
-    st.subheader(f"📈 1. 선택 날짜({center_date_str}) 중심 일주일간 실제 vs 예년(21~25) vs 모델별 예상 거래량 · 가격 비교 그래프")
+    # 2. 메인 비교 그래프: 선택일 포함 주간(월~토) 실제 vs 예년(21~25) vs Random Forest 예상 거래량 · 가격 비교 그래프
+    st.subheader(f"📈 1. 선택일 포함 주간({week_range_str}) 실제 vs 예년(21~25) vs Random Forest 예상 거래량 · 가격 비교 그래프")
 
     fig_comp, (ax_vol, ax_prc) = plt.subplots(1, 2, figsize=(18.5, 6.2))
     x_idx = np.arange(len(win_df))
@@ -532,12 +521,12 @@ else:
     ]
 
     for ax in (ax_vol, ax_prc):
-        ax.axvspan(center_idx - 0.42, center_idx + 0.42, color='#FFD166', alpha=0.30, zorder=0, label='선택 기준일(중앙)')
+        ax.axvspan(center_idx - 0.42, center_idx + 0.42, color='#FFD166', alpha=0.30, zorder=0, label='선택 기준일')
         ax.axvline(center_idx, color='#D62828', linestyle='--', linewidth=1.5, alpha=0.8, zorder=1)
 
-    # (좌) 일주일간 거래량 비교 그래프
-    n_bars = len(selected_models) + (1 if show_hist_21_25 else 0) + (1 if has_any_actual else 0)
-    bar_w = min(0.15, 0.78 / max(1, n_bars))
+    # (좌) 일주일간 거래량 비교 그래프 (실제 vs 예년 vs Random Forest 단일 모델만 출력)
+    n_bars = 1 + (1 if show_hist_21_25 else 0) + (1 if has_any_actual else 0)
+    bar_w = 0.22 if n_bars == 3 else (0.30 if n_bars == 2 else 0.45)
     offsets = np.linspace(-bar_w * (n_bars - 1) / 2, bar_w * (n_bars - 1) / 2, n_bars)
     b_pos = 0
 
@@ -572,41 +561,38 @@ else:
             )
         b_pos += 1
 
-    for m_name in selected_models:
-        m_cfg = MODEL_CONFIG[m_name]
-        v_vals = win_df[f'{m_name}_vol_p50'].fillna(0.0).values
-        ax_vol.bar(
-            x_idx + offsets[b_pos],
-            v_vals,
-            width=bar_w, color=m_cfg['color'], alpha=0.90,
-            label=f"{m_cfg['short']} 예상 물량"
+    rf_v_vals = win_df[f'{best_m}_vol_p50'].fillna(0.0).values
+    ax_vol.bar(
+        x_idx + offsets[b_pos],
+        rf_v_vals,
+        width=bar_w, color=best_cfg['color'], alpha=0.90,
+        label=f"{best_cfg['short']} 예상 물량"
+    )
+    ax_vol.plot(
+        x_idx + offsets[b_pos],
+        np.where(rf_v_vals > 0, rf_v_vals, np.nan),
+        color=best_cfg['color'], marker=best_cfg['marker'], linewidth=1.8, markersize=6
+    )
+    if rf_v_vals[center_idx] > 0:
+        ax_vol.text(
+            center_idx + offsets[b_pos],
+            rf_v_vals[center_idx] * 1.02,
+            f"{rf_v_vals[center_idx]:,.1f}톤",
+            ha='center', va='bottom', fontsize=8.5, fontweight='bold', color=best_cfg['color']
         )
-        ax_vol.plot(
-            x_idx + offsets[b_pos],
-            np.where(v_vals > 0, v_vals, np.nan),
-            color=m_cfg['color'], marker=m_cfg['marker'], linewidth=1.5, markersize=5
-        )
-        if v_vals[center_idx] > 0:
-            ax_vol.text(
-                center_idx + offsets[b_pos],
-                v_vals[center_idx] * 1.02,
-                f"{v_vals[center_idx]:,.1f}톤",
-                ha='center', va='bottom', fontsize=8, fontweight='bold', color=m_cfg['color']
-            )
-        b_pos += 1
 
-    ax_vol.set_title(f"[{selected_variety} - {selected_unit}] 선택일({center_row['date_label']}) 중심 일주일간 실제 · 예년 · 모델별 예상 거래량 (톤/일)", fontsize=12, fontweight='bold', pad=10)
+    ax_vol.set_title(f"[{selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · {best_cfg['short']} 예상 거래량 (톤/일)", fontsize=12, fontweight='bold', pad=10)
     ax_vol.set_xticks(x_idx)
     ax_vol.set_xticklabels(x_labels, fontsize=9.5, fontweight='bold')
     ax_vol.set_ylabel("거래량 (톤/일)", fontsize=10, fontweight='bold')
     ax_vol.yaxis.set_major_formatter(ticker.StrMethodFormatter('{x:,.1f}'))
-    max_vol_candidates = [win_df[f'{m}_vol_p90'].max() for m in selected_models] + [win_df['hist_vol_21_25'].max(), win_df['actual_vol_ton'].max(), 1.0]
+    max_vol_candidates = [win_df[f'{best_m}_vol_p90'].max(), win_df['hist_vol_21_25'].max(), win_df['actual_vol_ton'].max(), 1.0]
     max_vol_y = np.nanmax([v for v in max_vol_candidates if pd.notnull(v)])
     if np.isfinite(max_vol_y) and max_vol_y > 0:
         ax_vol.set_ylim(0, max_vol_y * 1.28)
-    ax_vol.legend(loc='upper right', fontsize=8.0, ncol=2)
+    ax_vol.legend(loc='upper right', fontsize=8.5)
 
-    # (우) 일주일간 가격 비교 그래프
+    # (우) 일주일간 가격 비교 그래프 (실제 vs 예년 vs Random Forest 단일 모델만 출력)
     if show_hist_21_25:
         ax_prc.plot(
             x_idx,
@@ -631,32 +617,30 @@ else:
                 ha='center', fontsize=8.8, fontweight='bold', color='#1D3557'
             )
 
-    for m_name in selected_models:
-        m_cfg = MODEL_CONFIG[m_name]
-        p50_vals = win_df[f'{m_name}_prc_p50'] * prc_mult
-        p10_vals = win_df[f'{m_name}_prc_p10'] * prc_mult
-        p90_vals = win_df[f'{m_name}_prc_p90'] * prc_mult
-        ax_prc.plot(
-            x_idx, p50_vals,
-            color=m_cfg['color'], linestyle='--', linewidth=2.2, marker=m_cfg['marker'], markersize=6.5,
-            label=f"{m_cfg['short']} 예상 가격"
+    rf_p50 = win_df[f'{best_m}_prc_p50'] * prc_mult
+    rf_p10 = win_df[f'{best_m}_prc_p10'] * prc_mult
+    rf_p90 = win_df[f'{best_m}_prc_p90'] * prc_mult
+    ax_prc.plot(
+        x_idx, rf_p50,
+        color=best_cfg['color'], linestyle='--', linewidth=2.4, marker=best_cfg['marker'], markersize=7.0,
+        label=f"{best_cfg['short']} 예상 가격"
+    )
+    if show_quantile_band:
+        ax_prc.fill_between(x_idx, rf_p10, rf_p90, color=best_cfg['color'], alpha=0.14, label=f"{best_cfg['short']} P10~P90 예측구간")
+    if pd.notnull(rf_p50.iloc[center_idx]):
+        ax_prc.annotate(
+            f"{best_cfg['short']}: {rf_p50.iloc[center_idx]:,.0f}원",
+            xy=(center_idx, rf_p50.iloc[center_idx]),
+            xytext=(0, 8), textcoords="offset points",
+            ha='center', fontsize=8.8, fontweight='bold', color=best_cfg['color']
         )
-        if show_quantile_band:
-            ax_prc.fill_between(x_idx, p10_vals, p90_vals, color=m_cfg['color'], alpha=0.11)
-        if pd.notnull(p50_vals.iloc[center_idx]):
-            ax_prc.annotate(
-                f"{m_cfg['short']}: {p50_vals.iloc[center_idx]:,.0f}원",
-                xy=(center_idx, p50_vals.iloc[center_idx]),
-                xytext=(0, 8), textcoords="offset points",
-                ha='center', fontsize=8.3, fontweight='bold', color=m_cfg['color']
-            )
 
-    ax_prc.set_title(f"[{selected_variety} - {selected_unit}] 선택일({center_row['date_label']}) 중심 일주일간 실제 · 예년 · 모델별 예상 가격 ({prc_unit_str})", fontsize=12, fontweight='bold', pad=10)
+    ax_prc.set_title(f"[{selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · {best_cfg['short']} 예상 가격 ({prc_unit_str})", fontsize=12, fontweight='bold', pad=10)
     ax_prc.set_xticks(x_idx)
     ax_prc.set_xticklabels(x_labels, fontsize=9.5, fontweight='bold')
     ax_prc.set_ylabel(f"가격 ({prc_unit_str})", fontsize=10, fontweight='bold')
     ax_prc.yaxis.set_major_formatter(ticker.StrMethodFormatter('{x:,.0f}'))
-    ax_prc.legend(loc='upper right', fontsize=8.0, ncol=2)
+    ax_prc.legend(loc='upper right', fontsize=8.5)
 
     plt.tight_layout()
     st.pyplot(fig_comp)
@@ -665,7 +649,7 @@ else:
     st.divider()
 
     # 3. 4개 모델 개별(2x2) 일주일간 예상 거래량(막대) + 예상 가격(선) 상세 그래프
-    st.subheader(f"🔍 2. 각각의 모델별(TFT · XGBoost · LightGBM · Random Forest) 일주일간 실제 vs 예상 거래량 · 가격 상세 그래프")
+    st.subheader(f"🔍 2. 각각의 모델별(TFT · XGBoost · LightGBM · Random Forest) 해당 주간({week_range_str}) 실제 vs 예상 거래량 · 가격 상세 그래프")
 
     ncols_m = 2
     nrows_m = int(np.ceil(len(selected_models) / ncols_m))
@@ -689,7 +673,7 @@ else:
         act_v_sub = win_df['actual_vol_ton'].fillna(0.0).values
         act_p_sub = (win_df['actual_prc_kg'] * prc_mult).values
 
-        ax1.axvspan(center_idx - 0.42, center_idx + 0.42, color='#FFD166', alpha=0.30, zorder=0, label='선택 기준일(중앙)')
+        ax1.axvspan(center_idx - 0.42, center_idx + 0.42, color='#FFD166', alpha=0.30, zorder=0, label='선택 기준일')
         ax1.axvline(center_idx, color='#D62828', linestyle='--', linewidth=1.4, zorder=1)
 
         if show_hist_21_25 and has_any_actual:
@@ -803,8 +787,8 @@ else:
         # (좌) 모델별 가격 예측 정확도(%) 비교
         if has_win_acc:
             b1 = ax_ap.bar(xm - bw, acc_df['_g_p_acc'], width=bw, color='#2A9D8F', alpha=0.90, label=f'선택 규격({selected_variety}-{selected_unit}) 가격 정확도(%)')
-            b2 = ax_ap.bar(xm, acc_df['_w_p_acc'].fillna(0.0), width=bw, color='#E76F51', alpha=0.90, label='현재 조회 7일 구간 가격 정확도(%)')
-            b3 = ax_ap.bar(xm + bw, acc_df['_o_p_acc'], width=bw, color='#457B9D', alpha=0.85, label='전체 47개 규격 평균 가격 정확도(%)')
+            b2 = ax_ap.bar(xm, acc_df['_w_p_acc'].fillna(0.0), width=bw, color='#E76F51', alpha=0.90, label='해당 주간(월~토) 가격 정확도(%)')
+            b3 = ax_ap.bar(xm + bw, acc_df['_o_p_acc'], width=bw, color='#457B9D', alpha=0.85, label=f'전체 {n_total_groups}개 규격 평균 가격 정확도(%)')
             for bars_grp in (b1, b2, b3):
                 for b in bars_grp:
                     h = b.get_height()
@@ -812,7 +796,7 @@ else:
                         ax_ap.text(b.get_x() + b.get_width()/2, h + 0.4, f"{h:.1f}%", ha='center', va='bottom', fontsize=8.5, fontweight='bold')
         else:
             b1 = ax_ap.bar(xm - bw/2, acc_df['_g_p_acc'], width=bw, color='#2A9D8F', alpha=0.90, label=f'선택 규격({selected_variety}-{selected_unit}) 가격 정확도(%)')
-            b3 = ax_ap.bar(xm + bw/2, acc_df['_o_p_acc'], width=bw, color='#457B9D', alpha=0.85, label='전체 47개 규격 평균 가격 정확도(%)')
+            b3 = ax_ap.bar(xm + bw/2, acc_df['_o_p_acc'], width=bw, color='#457B9D', alpha=0.85, label=f'전체 {n_total_groups}개 규격 평균 가격 정확도(%)')
             for bars_grp in (b1, b3):
                 for b in bars_grp:
                     h = b.get_height()
@@ -829,8 +813,8 @@ else:
         # (우) 모델별 거래량 예측 정확도(%) 및 결정계수(R²) 비교
         if has_win_acc:
             bv1 = ax_av.bar(xm - bw, acc_df['_g_v_acc'], width=bw, color='#2A9D8F', alpha=0.90, label=f'선택 규격({selected_variety}-{selected_unit}) 거래량 정확도(100-WMAPE, %)')
-            bv2 = ax_av.bar(xm, acc_df['_w_v_acc'].fillna(0.0), width=bw, color='#E76F51', alpha=0.90, label='현재 조회 7일 구간 거래량 정확도(%)')
-            bv3 = ax_av.bar(xm + bw, acc_df['_o_v_r2_pct'], width=bw, color='#8E44AD', alpha=0.85, label='전체 47개 규격 거래량 설명력(R²×100, %)')
+            bv2 = ax_av.bar(xm, acc_df['_w_v_acc'].fillna(0.0), width=bw, color='#E76F51', alpha=0.90, label='해당 주간(월~토) 거래량 정확도(%)')
+            bv3 = ax_av.bar(xm + bw, acc_df['_o_v_r2_pct'], width=bw, color='#8E44AD', alpha=0.85, label=f'전체 {n_total_groups}개 규격 거래량 설명력(R²×100, %)')
             for bars_grp in (bv1, bv2, bv3):
                 for b in bars_grp:
                     h = b.get_height()
@@ -838,7 +822,7 @@ else:
                         ax_av.text(b.get_x() + b.get_width()/2, h + 0.5, f"{h:.1f}%", ha='center', va='bottom', fontsize=8.5, fontweight='bold')
         else:
             bv1 = ax_av.bar(xm - bw/2, acc_df['_g_v_acc'], width=bw, color='#2A9D8F', alpha=0.90, label=f'선택 규격({selected_variety}-{selected_unit}) 거래량 정확도(100-WMAPE, %)')
-            bv3 = ax_av.bar(xm + bw/2, acc_df['_o_v_r2_pct'], width=bw, color='#8E44AD', alpha=0.85, label='전체 47개 규격 거래량 설명력(R²×100, %)')
+            bv3 = ax_av.bar(xm + bw/2, acc_df['_o_v_r2_pct'], width=bw, color='#8E44AD', alpha=0.85, label=f'전체 {n_total_groups}개 규격 거래량 설명력(R²×100, %)')
             for bars_grp in (bv1, bv3):
                 for b in bars_grp:
                     h = b.get_height()
@@ -861,14 +845,14 @@ else:
 
     st.divider()
 
-    # 5. 일주일간 날짜별 · 모델별 상세 예측 데이터 테이블 출력 (실제 가격·거래량 포함)
-    st.subheader(f"📋 4. [{selected_variety} - {selected_unit}] 선택일({center_date_str}) 중심 일주일간 실제 · 예년 · 모델별 예상 가격 및 거래량 상세 비교표")
+    # 5. 주간(월~토) 날짜별 · 모델별 상세 예측 데이터 테이블 출력 (실제 가격·거래량 포함)
+    st.subheader(f"📋 4. [{selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · 모델별 예상 가격 및 거래량 상세 비교표")
     st.dataframe(table_df, use_container_width=True, hide_index=True)
 
     st.download_button(
-        label="📥 현재 조회된 일주일간 실제·예년·모델별 예측 결과 CSV 다운로드",
+        label="📥 해당 주간(월~토) 실제·예년·모델별 예측 결과 CSV 다운로드",
         data=csv_bytes,
-        file_name=f"citrus_7day_forecast_{selected_gid}_{selected_date.strftime('%Y%m%d')}.csv",
+        file_name=f"citrus_mon_sat_forecast_{selected_gid}_{selected_date.strftime('%Y%m%d')}.csv",
         mime="text/csv",
         key="btn_download_active"
     )

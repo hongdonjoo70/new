@@ -52,6 +52,7 @@ ipython_config.py
 # ==========================================
 # 대용량 통합 원본 CSV 제외 (개별 원본 CSV 및 pkl까지 제외하려면 아래 주석 해제)
 data/*_all.csv
+data/*_all18.pkl
 # data/*kat*.csv
 # data/*.pkl
 *.log
