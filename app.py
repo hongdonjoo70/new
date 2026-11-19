@@ -107,36 +107,51 @@ def calc_accuracy_metrics(df_eval, m_name, prc_mult=1.0):
         'p_mae': p_mae, 'p_rmse': p_rmse, 'p_mape': p_mape, 'p_acc': p_acc, 'p_r2': p_r2
     }
 
-@st.cache_data(show_spinner="4개 모델 예측 데이터셋(2021-01-02 ~ 2026-12-31) 및 모델별 정확도를 불러오는 중입니다...")
-def load_prediction_data():
+@st.cache_data(show_spinner="전체시장 및 5대 도매시장 4개 모델 예측 데이터셋(2021-01-02 ~ 2026-12-31)을 불러오는 중입니다...")
+def load_prediction_data(file_mtime: float):
     pkl_path = Path("data") / "streamlit_predictions.pkl"
     if not pkl_path.exists():
         raise FileNotFoundError(f"예측 데이터 파일이 존재하지 않습니다: {pkl_path}")
     with open(pkl_path, "rb") as f:
         data = pickle.load(f)
-    df = data['all_preds_df'].copy()
-    df['date'] = pd.to_datetime(df['date'])
-    df = df[(df['date'] >= '2021-01-02') & (df['date'] <= '2026-12-31')].sort_values(['group_id', 'date']).reset_index(drop=True)
 
-    # 전체 주요 규격(16개 규격) 종합 모델별 정확도 사전 산출
-    overall_acc = {}
-    for m_name in MODEL_CONFIG:
-        overall_acc[m_name] = calc_accuracy_metrics(df, m_name, prc_mult=1.0)
+    if "markets" in data and isinstance(data["markets"], dict):
+        market_order = data.get("market_order", list(data["markets"].keys()))
+        raw_markets = data["markets"]
+    else:
+        market_order = ["전체시장"]
+        raw_markets = {"전체시장": data}
 
-    return (
-        df,
-        data['top5_units'],
-        data['variety_order'],
-        data['offseason_summary_df'],
-        data['active_season_pairs'],
-        set(pd.to_datetime(list(data['korean_holidays']))),
-        data['wk_full_grid'],
-        overall_acc
-    )
+    markets_prepared = {}
+    for mkt_name in market_order:
+        if mkt_name not in raw_markets:
+            continue
+        m_data = raw_markets[mkt_name]
+        df = m_data['all_preds_df'].copy()
+        df['date'] = pd.to_datetime(df['date'])
+        df = df[(df['date'] >= '2021-01-02') & (df['date'] <= '2026-12-31')].sort_values(['group_id', 'date']).reset_index(drop=True)
+
+        overall_acc = {}
+        for m_name in MODEL_CONFIG:
+            overall_acc[m_name] = calc_accuracy_metrics(df, m_name, prc_mult=1.0)
+
+        markets_prepared[mkt_name] = {
+            'all_preds_df': df,
+            'top5_units': m_data['top5_units'],
+            'variety_order': m_data['variety_order'],
+            'offseason_summary_df': m_data['offseason_summary_df'],
+            'active_season_pairs': m_data['active_season_pairs'],
+            'korean_holidays': set(pd.to_datetime(list(m_data['korean_holidays']))),
+            'wk_full_grid': m_data['wk_full_grid'],
+            'overall_acc': overall_acc,
+        }
+
+    return market_order, markets_prepared
 
 try:
-    all_preds_df, top5_units, variety_order, offseason_summary_df, active_season_pairs, korean_holidays, wk_full_grid, overall_acc_dict = load_prediction_data()
-    n_total_groups = len(top5_units)
+    _pkl_path = Path("data") / "streamlit_predictions.pkl"
+    _pkl_mtime = _pkl_path.stat().st_mtime if _pkl_path.exists() else 0.0
+    market_order, markets_prepared = load_prediction_data(_pkl_mtime)
 except Exception as e:
     st.error(f"데이터 로드 오류: {e}")
     st.stop()
@@ -145,7 +160,7 @@ except Exception as e:
 st.markdown(
     """
     <div style="background: linear-gradient(90deg, #1D3557 0%, #2A9D8F 100%); padding: 18px 24px; border-radius: 12px; color: white; margin-bottom: 16px;">
-        <h2 style="margin: 0; color: white; font-weight: 800;">🍊 감귤 4대 핵심 품종(조생귤 · 한라봉 · 하우스감귤 · 천혜향) 주간(월~토) 예상 가격 · 거래량</h2>
+        <h2 style="margin: 0; color: white; font-weight: 800;">🍊 감귤 4대 핵심 품종(조생귤 · 한라봉 · 하우스감귤 · 천혜향) 시장별 주간(월~토) 예상 가격 · 거래량</h2>
     </div>
     """,
     unsafe_allow_html=True
@@ -155,10 +170,27 @@ st.markdown(
 with st.sidebar:
     st.header("🔍 예측 조회 조건 설정")
 
+    selected_market = st.selectbox(
+        "1️⃣ 도매시장 선택",
+        options=market_order,
+        index=0
+    )
+
+    mkt_bundle = markets_prepared[selected_market]
+    all_preds_df = mkt_bundle['all_preds_df']
+    top5_units = mkt_bundle['top5_units']
+    variety_order = mkt_bundle['variety_order']
+    offseason_summary_df = mkt_bundle['offseason_summary_df']
+    active_season_pairs = mkt_bundle['active_season_pairs']
+    korean_holidays = mkt_bundle['korean_holidays']
+    wk_full_grid = mkt_bundle['wk_full_grid']
+    overall_acc_dict = mkt_bundle['overall_acc']
+    n_total_groups = len(top5_units)
+
     TARGET_VARIETIES = ['조생귤', '한라봉', '하우스감귤', '천혜향']
     avail_varieties = [v for v in TARGET_VARIETIES if v in top5_units['variety'].unique()]
     selected_variety = st.selectbox(
-        "1️⃣ 품종 선택",
+        "2️⃣ 품종 선택",
         options=avail_varieties,
         index=0
     )
@@ -170,7 +202,7 @@ with st.sidebar:
         for _, r in sub_units.iterrows()
     }
     selected_unit = st.selectbox(
-        "2️⃣ 거래단위 선택",
+        "3️⃣ 거래단위 선택",
         options=unit_options,
         format_func=lambda u: unit_labels.get(u, u),
         index=0
@@ -186,7 +218,7 @@ with st.sidebar:
     last_actual_dt = actual_sub['date'].max().date() if len(actual_sub) > 0 else date(2026, 11, 11)
 
     st.info(
-        f"**[{selected_variety}] 시즌 안내**\n"
+        f"**[{selected_market} · {selected_variety}] 시즌 안내**\n"
         f"- **출하기 (시작~종료)**: `{season_clean_str}`"
     )
 
@@ -197,7 +229,7 @@ with st.sidebar:
     default_target = last_actual_dt if last_actual_dt in avail_dates_list else (avail_dates_list[-1] if avail_dates_list else date(2026, 11, 11))
 
     selected_date = st.date_input(
-        "3️⃣ 기준 날짜 선택 (해당 주간 월~토 예측)",
+        "4️⃣ 기준 날짜 선택 (해당 주간 월~토 예측)",
         value=default_target,
         min_value=min_dt,
         max_value=max_dt
@@ -397,11 +429,11 @@ if is_offseason:
                 OFF-SEASON NOTICE
             </div>
             <h1 style="color: #BF360C; font-size: 36px; font-weight: 900; margin: 0 0 16px 0; letter-spacing: -1px;">
-                ⚠️ 현재 선택일은 [{selected_variety}] 계절적 비수기입니다
+                ⚠️ 현재 선택일은 [{selected_market} · {selected_variety}] 계절적 비수기입니다
             </h1>
             <p style="color: #4E342E; font-size: 19px; font-weight: 700; margin: 0 0 22px 0; line-height: 1.5;">
                 선택하신 날짜 <span style="background-color: #FFFFFF; padding: 4px 14px; border-radius: 8px; border: 2px solid #FF8F00; color: #C62828; font-weight: 800;">{selected_date_disp}</span>는 
-                <span style="color: #1B5E20; text-decoration: underline;">[{selected_variety}]</span> 품종의 
+                <span style="color: #1B5E20; text-decoration: underline;">[{selected_market} · {selected_variety}]</span> 품종의 
                 <strong style="color: #D84315;">경매 비수기(예측 제외 기간)</strong>에 해당하여 
                 <span style="background-color: #FFCDD2; color: #B71C1C; padding: 2px 8px; border-radius: 4px; font-weight: 800;">예측 Graph 출력을 비활성화(숨김)</span>합니다.
             </p>
@@ -415,7 +447,7 @@ if is_offseason:
                     💡 <strong>비수기 예측 제외 사유:</strong><br/>
                     감귤 도매시장 경매 특성상 비수기에는 출하 및 거래량이 거의 없어(0톤에 수렴) 가격 변동성이 왜곡되며 모델 신뢰도를 보장하기 어렵습니다. 이에 따라 <strong>비수기에는 인공지능 가격 및 거래량 예측 그래프(1번 및 2번) 출력을 비활성화</strong>합니다.<br/><br/>
                     👉 <strong>예측 그래프 확인 방법:</strong><br/>
-                    좌측 사이드바의 <strong>[3️⃣ 기준 날짜 선택]</strong>에서 위 <strong>출하기 기간 ({season_clean_str})</strong> 내 날짜를 선택하시면 4개 모델(TFT, XGBoost, LightGBM, Random Forest)의 해당 주간(월~토) 예상 가격 및 거래량 그래프를 즉시 확인하실 수 있습니다.
+                    좌측 사이드바의 <strong>[4️⃣ 기준 날짜 선택]</strong>에서 위 <strong>출하기 기간 ({season_clean_str})</strong> 내 날짜를 선택하시면 4개 모델(TFT, XGBoost, LightGBM, Random Forest)의 해당 주간(월~토) 예상 가격 및 거래량 그래프를 즉시 확인하실 수 있습니다.
                 </div>
             </div>
         </div>
@@ -448,7 +480,7 @@ else:
         )
 
     # 1. 상단 KPI 요약 카드 (실제값 + 예년값 + 가격 정확도 1위 Random Forest 예상값 요약)
-    st.subheader(f"📌 [{selected_variety} - {selected_unit}] {week_range_str} 주간 요약 (선택일: {center_date_str}, 최고 정확도 모델: Random Forest)")
+    st.subheader(f"📌 [{selected_market} · {selected_variety} - {selected_unit}] {week_range_str} 주간 요약 (선택일: {center_date_str}, 최고 정확도 모델: Random Forest)")
 
     n_extra_kpis = (1 if has_any_actual else 0) + 1
     kpi_cols = st.columns(1 + n_extra_kpis)
@@ -505,7 +537,8 @@ else:
             value=f"{c_prc_disp:,.0f} {prc_unit_str}" if pd.notnull(c_prc_disp) else "-",
             delta=f"예상 물량: {c_vol:,.1f} 톤 ({diff_str})" if pd.notnull(c_vol) else "-"
         )
-        st.caption("가격 정확도 1위 모델 (2021~2026 전체 90.8%)")
+        rf_overall_p_acc = overall_acc_dict['RandomForest']['p_acc'] if overall_acc_dict.get('RandomForest') else 0.0
+        st.caption(f"가격 정확도 1위 모델 ({selected_market} 2021~2026 전체 {rf_overall_p_acc:.1f}%)")
     col_cursor += 1
 
     st.divider()
@@ -581,7 +614,7 @@ else:
             ha='center', va='bottom', fontsize=8.5, fontweight='bold', color=best_cfg['color']
         )
 
-    ax_vol.set_title(f"[{selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · {best_cfg['short']} 예상 거래량 (톤/일)", fontsize=12, fontweight='bold', pad=10)
+    ax_vol.set_title(f"[{selected_market} | {selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · {best_cfg['short']} 예상 거래량 (톤/일)", fontsize=11.5, fontweight='bold', pad=10)
     ax_vol.set_xticks(x_idx)
     ax_vol.set_xticklabels(x_labels, fontsize=9.5, fontweight='bold')
     ax_vol.set_ylabel("거래량 (톤/일)", fontsize=10, fontweight='bold')
@@ -635,7 +668,7 @@ else:
             ha='center', fontsize=8.8, fontweight='bold', color=best_cfg['color']
         )
 
-    ax_prc.set_title(f"[{selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · {best_cfg['short']} 예상 가격 ({prc_unit_str})", fontsize=12, fontweight='bold', pad=10)
+    ax_prc.set_title(f"[{selected_market} | {selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · {best_cfg['short']} 예상 가격 ({prc_unit_str})", fontsize=11.5, fontweight='bold', pad=10)
     ax_prc.set_xticks(x_idx)
     ax_prc.set_xticklabels(x_labels, fontsize=9.5, fontweight='bold')
     ax_prc.set_ylabel(f"가격 ({prc_unit_str})", fontsize=10, fontweight='bold')
@@ -846,13 +879,13 @@ else:
     st.divider()
 
     # 5. 주간(월~토) 날짜별 · 모델별 상세 예측 데이터 테이블 출력 (실제 가격·거래량 포함)
-    st.subheader(f"📋 4. [{selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · 모델별 예상 가격 및 거래량 상세 비교표")
+    st.subheader(f"📋 4. [{selected_market} · {selected_variety} - {selected_unit}] 해당 주간({week_range_str}) 실제 · 예년 · 모델별 예상 가격 및 거래량 상세 비교표")
     st.dataframe(table_df, use_container_width=True, hide_index=True)
 
     st.download_button(
         label="📥 해당 주간(월~토) 실제·예년·모델별 예측 결과 CSV 다운로드",
         data=csv_bytes,
-        file_name=f"citrus_mon_sat_forecast_{selected_gid}_{selected_date.strftime('%Y%m%d')}.csv",
+        file_name=f"citrus_mon_sat_forecast_{selected_market}_{selected_gid}_{selected_date.strftime('%Y%m%d')}.csv",
         mime="text/csv",
         key="btn_download_active"
     )
